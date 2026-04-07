@@ -60,6 +60,20 @@ repos:
       - id: ruff-format
         name: Format code using ruff
         types_or: [ python, pyi, jupyter ]
+    # Analyze type hints and report errors.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.19.0
+    hooks:
+      - id: mypy
+        name: mypy (python files in src/ and tests/)
+        entry: mypy
+        language: system
+        types: [python]
+        files: ^(src|tests)/
+        args:
+          [
+            "--ignore-missing-imports", # Ignore imports without type hints
+          ]
     # Run unit tests, verify that they pass. Note that coverage is run against
     # the ./src directory here because that is what will be committed. In the
     # github workflow script, the coverage is run against the installed package
