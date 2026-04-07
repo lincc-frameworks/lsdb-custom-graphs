@@ -5,7 +5,7 @@ from .layout import compute_layout
 from .renderer import render_graph
 
 
-def visualise_graph(dask_graph: dict, width: int = 1000, height: int = 600):
+def visualise_graph(dask_graph: dict, width: int = 1000, height: int = 600, calculate_memory: bool = True):
     """Visualise a Dask task graph in a Jupyter notebook.
 
     Parameters
@@ -24,4 +24,4 @@ def visualise_graph(dask_graph: dict, width: int = 1000, height: int = 600):
     """
     G = dask_graph_to_networkx(dask_graph)
     positions = compute_layout(G)
-    return render_graph(G, positions, dask_graph, width=width, height=height)
+    return render_graph(G, positions, dask_graph, width=width, height=height, calculate_memory=calculate_memory)

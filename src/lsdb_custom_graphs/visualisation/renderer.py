@@ -5,10 +5,14 @@ from pathlib import Path
 
 import networkx as nx
 from bokeh.io import output_notebook, show
+from bokeh.layouts import column, row
 from bokeh.models import (
+    Button,
+    ColorBar,
     ColumnDataSource,
     CustomJS,
     HoverTool,
+    LinearColorMapper,
     MultiLine,
     Range1d,
     Rect,
@@ -16,8 +20,10 @@ from bokeh.models import (
     Text,
     WheelZoomTool,
 )
-from bokeh.palettes import Category20
+from bokeh.palettes import Category20, Viridis256
 from bokeh.plotting import figure
+
+from .memory import estimate_task_memory, format_bytes
 
 
 def render_graph(
@@ -26,6 +32,7 @@ def render_graph(
     dask_graph: dict,
     width: int = 1000,
     height: int = 600,
+    calculate_memory: bool = True,
 ):
     """Render a Dask task graph with client-side viewport filtering.
 
@@ -56,20 +63,26 @@ def render_graph(
 
     # Build full node data — x is column index, y is row position
     nodes = list(G.nodes())
-    all_x = []
-    all_y = []
-    all_colors = []
-    all_labels = []
-    all_reprs = []
+    all_x = [positions[n][0] for n in nodes]
+    all_y = [positions[n][1] for n in nodes]
+    all_task_colors = [color_map[G.nodes[n]["task_name"]] for n in nodes]
+    limit = 15
+    def truncate(text):
+        return f"{text[:limit] + '...' if len(text) > limit else text}"
+    all_labels = [f"{truncate(G.nodes[n]['task_name'])} [{G.nodes[n]['partition']}]" for n in nodes]
+    all_memory = [estimate_task_memory(dask_graph[n]) for n in nodes] if calculate_memory else [0] * len(nodes)
+    all_reprs = [_format_task_tooltip(n, dask_graph[n], m) for n, m in zip(nodes, all_memory)]
 
-    for node in nodes:
-        x, y = positions[node]
-        all_x.append(x)
-        all_y.append(y)
-        data = G.nodes[node]
-        all_colors.append(color_map[data["task_name"]])
-        all_labels.append(f"{data['task_name']} [{data['partition']}]")
-        all_reprs.append(_format_task_tooltip(node, dask_graph[node]))
+    max_mem = max(all_memory) if all_memory else 1
+    min_mem = min(all_memory) if all_memory else 0
+    mem_mapper = LinearColorMapper(palette=Viridis256, low=min_mem, high=max_mem)
+    all_mem_colors = []
+    for mem in all_memory:
+        if max_mem == min_mem:
+            idx = 128
+        else:
+            idx = int(255 * (mem - min_mem) / (max_mem - min_mem))
+        all_mem_colors.append(Viridis256[min(idx, 255)])
 
     # Build full edge data with source/dest indices
     node_to_idx = {n: i for i, n in enumerate(nodes)}
@@ -84,7 +97,9 @@ def render_graph(
         data={
             "x": all_x,
             "y": all_y,
-            "color": all_colors,
+            "task_color": all_task_colors,
+            "mem_color": all_mem_colors,
+            "color": list(all_task_colors),
             "label": all_labels,
             "task_repr": all_reprs,
         }
@@ -107,8 +122,13 @@ def render_graph(
         init_arrow_angle += [angle, angle]
 
     node_source = ColumnDataSource(
-        data={"x": list(all_x), "y": list(all_y), "color": list(all_colors),
-              "label": list(all_labels), "task_repr": list(all_reprs)}
+        data={
+            "x": list(all_x), "y": list(all_y),
+            "task_color": list(all_task_colors),
+            "mem_color": list(all_mem_colors),
+            "color": list(all_task_colors),
+            "label": list(all_labels), "task_repr": list(all_reprs),
+        }
     )
     edge_source = ColumnDataSource(data={"xs": init_edge_xs, "ys": init_edge_ys})
     arrow_source = ColumnDataSource(
@@ -192,6 +212,67 @@ def render_graph(
     )
     p.add_tools(hover)
 
+    # Memory color bar (initially hidden)
+    color_bar = ColorBar(
+        color_mapper=mem_mapper,
+        title="Memory",
+        visible=False,
+        width=15,
+    )
+    p.add_layout(color_bar, "right")
+
+    # Toggle button for memory coloring
+    toggle_btn = Button(label="Color by Memory", button_type="default", width=150)
+
+    toggle_js = CustomJS(
+        args={
+            "node_source": node_source,
+            "full_node": full_node_source,
+            "color_bar": color_bar,
+            "btn": toggle_btn,
+        },
+        code="""
+        const mode = btn.label === 'Color by Memory' ? 'memory' : 'task';
+
+        if (mode === 'memory') {
+            btn.label = 'Color by Task';
+            color_bar.visible = true;
+            // Switch visible source colors
+            const n = node_source.data['x'].length;
+            const new_colors = [];
+            for (let i = 0; i < n; i++) {
+                new_colors.push(node_source.data['mem_color'][i]);
+            }
+            node_source.data['color'] = new_colors;
+            // Switch full source colors
+            const fn = full_node.data['x'].length;
+            const new_full = [];
+            for (let i = 0; i < fn; i++) {
+                new_full.push(full_node.data['mem_color'][i]);
+            }
+            full_node.data['color'] = new_full;
+        } else {
+            btn.label = 'Color by Memory';
+            color_bar.visible = false;
+            const n = node_source.data['x'].length;
+            const new_colors = [];
+            for (let i = 0; i < n; i++) {
+                new_colors.push(node_source.data['task_color'][i]);
+            }
+            node_source.data['color'] = new_colors;
+            const fn = full_node.data['x'].length;
+            const new_full = [];
+            for (let i = 0; i < fn; i++) {
+                new_full.push(full_node.data['task_color'][i]);
+            }
+            full_node.data['color'] = new_full;
+        }
+        node_source.change.emit();
+        full_node.change.emit();
+        """,
+    )
+    toggle_btn.js_on_click(toggle_js)
+
     # JS callback for viewport filtering
     js_path = Path(__file__).parent / "viewport_filter.js"
     callback = CustomJS(
@@ -212,16 +293,18 @@ def render_graph(
     p.y_range.js_on_change("start", callback)
     p.y_range.js_on_change("end", callback)
 
-    show(p)
-    return p
+    layout = column(row(toggle_btn), p) if calculate_memory else p
+    show(layout)
+    return layout
 
 
-def _format_task_tooltip(key, task):
+def _format_task_tooltip(key, task, memory_bytes):
     """Build an HTML tooltip string from a Dask task object."""
     import html
 
     lines = []
     lines.append(f"<b>Key:</b> {html.escape(str(key))}")
+    lines.append(f"<b>Memory:</b> {format_bytes(memory_bytes)}")
 
     # Legacy-style tuple task: (func, arg1, arg2, ...)
     if isinstance(task, tuple) and task and callable(task[0]):

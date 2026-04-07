@@ -6,6 +6,8 @@ const y1 = y_range.end;
 const all_x = full_node.data['x'];
 const all_y = full_node.data['y'];
 const all_color = full_node.data['color'];
+const all_task_color = full_node.data['task_color'];
+const all_mem_color = full_node.data['mem_color'];
 const all_label = full_node.data['label'];
 const all_repr = full_node.data['task_repr'];
 
@@ -13,6 +15,8 @@ const all_repr = full_node.data['task_repr'];
 const vis_x = [];
 const vis_y = [];
 const vis_color = [];
+const vis_task_color = [];
+const vis_mem_color = [];
 const vis_label = [];
 const vis_repr = [];
 
@@ -21,6 +25,8 @@ for (let i = 0; i < all_x.length; i++) {
         vis_x.push(all_x[i]);
         vis_y.push(all_y[i]);
         vis_color.push(all_color[i]);
+        vis_task_color.push(all_task_color[i]);
+        vis_mem_color.push(all_mem_color[i]);
         vis_label.push(all_label[i]);
         vis_repr.push(all_repr[i]);
     }
@@ -28,6 +34,7 @@ for (let i = 0; i < all_x.length; i++) {
 
 node_source.data = {
     'x': vis_x, 'y': vis_y, 'color': vis_color,
+    'task_color': vis_task_color, 'mem_color': vis_mem_color,
     'label': vis_label, 'task_repr': vis_repr
 };
 
