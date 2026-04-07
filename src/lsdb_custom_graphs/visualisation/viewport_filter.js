@@ -49,10 +49,17 @@ for (let i = 0; i < src.length; i++) {
         edge_xs.push([sx, dx]);
         edge_ys.push([sy, dy]);
 
-        // Arrowhead at midpoint, pointing from src to dst
-        arrow_x.push((sx + dx) / 2);
-        arrow_y.push((sy + dy) / 2);
-        arrow_angle.push(Math.atan2(dy - sy, dx - sx));
+        // Bokeh triangle points up at angle=0, so subtract PI/2 to align with direction
+        const angle = Math.atan2(dy - sy, dx - sx) - Math.PI / 2;
+
+        // Two arrowheads: one near source (25%) and one near dest (75%)
+        arrow_x.push(sx + 0.25 * (dx - sx));
+        arrow_y.push(sy + 0.25 * (dy - sy));
+        arrow_angle.push(angle);
+
+        arrow_x.push(sx + 0.75 * (dx - sx));
+        arrow_y.push(sy + 0.75 * (dy - sy));
+        arrow_angle.push(angle);
     }
 }
 

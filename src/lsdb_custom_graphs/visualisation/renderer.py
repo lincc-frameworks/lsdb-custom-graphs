@@ -96,12 +96,15 @@ def render_graph(
     # Initial data — show everything
     init_edge_xs = [[all_x[s], all_x[d]] for s, d in zip(edge_src, edge_dst)]
     init_edge_ys = [[all_y[s], all_y[d]] for s, d in zip(edge_src, edge_dst)]
-    init_arrow_x = [(all_x[s] + all_x[d]) / 2 for s, d in zip(edge_src, edge_dst)]
-    init_arrow_y = [(all_y[s] + all_y[d]) / 2 for s, d in zip(edge_src, edge_dst)]
-    init_arrow_angle = [
-        math.atan2(all_y[d] - all_y[s], all_x[d] - all_x[s])
-        for s, d in zip(edge_src, edge_dst)
-    ]
+    # Two arrowheads per edge at 25% and 75%, angle corrected for Bokeh's triangle orientation
+    init_arrow_x = []
+    init_arrow_y = []
+    init_arrow_angle = []
+    for s, d in zip(edge_src, edge_dst):
+        angle = math.atan2(all_y[d] - all_y[s], all_x[d] - all_x[s]) - math.pi / 2
+        init_arrow_x += [all_x[s] + 0.25 * (all_x[d] - all_x[s]), all_x[s] + 0.75 * (all_x[d] - all_x[s])]
+        init_arrow_y += [all_y[s] + 0.25 * (all_y[d] - all_y[s]), all_y[s] + 0.75 * (all_y[d] - all_y[s])]
+        init_arrow_angle += [angle, angle]
 
     node_source = ColumnDataSource(
         data={"x": list(all_x), "y": list(all_y), "color": list(all_colors),
@@ -220,33 +223,51 @@ def _format_task_tooltip(key, task):
     lines = []
     lines.append(f"<b>Key:</b> {html.escape(str(key))}")
 
-    # Plain value — not a Task or DataNode
+    # Legacy-style tuple task: (func, arg1, arg2, ...)
+    if isinstance(task, tuple) and task and callable(task[0]):
+        lines.append("<b>Type:</b> Legacy Task (tuple)")
+        func_name = getattr(task[0], "__name__", repr(task[0]))
+        lines.append(f"<b>Function:</b> {html.escape(func_name)}")
+        for i, arg in enumerate(task[1:]):
+            arg_str = repr(arg)
+            if len(arg_str) > 200:
+                arg_str = arg_str[:200] + "..."
+            lines.append(f"<b>Arg {i}:</b> {html.escape(arg_str)}")
+        return "<div style='max-width:600px'>" + "<br>".join(lines) + "</div>"
+
+    # Legacy-style list or any other plain Python value (show full repr)
     if not hasattr(task, "key"):
+        lines.append(f"<b>Type:</b> Literal ({html.escape(type(task).__name__)})")
         v_str = repr(task)
-        if len(v_str) > 200:
-            v_str = v_str[:200] + "..."
+        if len(v_str) > 500:
+            v_str = v_str[:500] + "..."
         lines.append(f"<b>Value:</b> {html.escape(v_str)}")
         return "<div style='max-width:600px'>" + "<br>".join(lines) + "</div>"
 
-    # DataNode — just holds a literal value, no function/args
+    # Alias — points to another key
+    if hasattr(task, "target"):
+        lines.append("<b>Type:</b> Alias")
+        lines.append(f"<b>Alias for:</b> {html.escape(str(task.target))}")
+        return "<div style='max-width:600px'>" + "<br>".join(lines) + "</div>"
+
+    # DataNode — holds a literal value
     if not hasattr(task, "func"):
+        lines.append("<b>Type:</b> DataNode")
         value = getattr(task, "value", None)
         if value is not None:
             v_str = repr(value)
-            if len(v_str) > 200:
-                v_str = v_str[:200] + "..."
+            if len(v_str) > 500:
+                v_str = v_str[:500] + "..."
             lines.append(f"<b>Value:</b> {html.escape(v_str)}")
         return "<div style='max-width:600px'>" + "<br>".join(lines) + "</div>"
 
-    # Task — has function, args, kwargs
-    func = task.func
-    func_name = getattr(func, "__name__", repr(func))
+    # New-style Task — has function, args, kwargs, dependencies
+    lines.append("<b>Type:</b> Task")
+    func_name = getattr(task.func, "__name__", repr(task.func))
     lines.append(f"<b>Function:</b> {html.escape(func_name)}")
 
-    # Args (skip TaskRef entries, show concrete values)
     for i, arg in enumerate(task.args):
-        type_name = type(arg).__name__
-        if type_name == "TaskRef":
+        if type(arg).__name__ in ("TaskRef", "Alias"):
             lines.append(f"<b>Arg {i}:</b> → {html.escape(str(arg))}")
         else:
             arg_str = repr(arg)
@@ -254,12 +275,10 @@ def _format_task_tooltip(key, task):
                 arg_str = arg_str[:200] + "..."
             lines.append(f"<b>Arg {i}:</b> {html.escape(arg_str)}")
 
-    # Kwargs (skip _meta, show the rest)
     for k, v in task.kwargs.items():
         if k == "_meta":
             continue
-        type_name = type(v).__name__
-        if type_name == "TaskRef":
+        if type(v).__name__ in ("TaskRef", "Alias"):
             lines.append(f"<b>{html.escape(k)}:</b> → {html.escape(str(v))}")
         else:
             v_str = repr(v)
@@ -267,7 +286,6 @@ def _format_task_tooltip(key, task):
                 v_str = v_str[:200] + "..."
             lines.append(f"<b>{html.escape(k)}:</b> {html.escape(v_str)}")
 
-    # Dependencies
     deps = task.dependencies
     if deps:
         dep_strs = [html.escape(str(d)) for d in deps]
