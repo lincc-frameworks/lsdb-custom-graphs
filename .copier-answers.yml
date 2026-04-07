@@ -1,0 +1,17 @@
+# Changes here will be overwritten by Copier
+_commit: v2.2.0
+_src_path: gh:lincc-frameworks/python-project-template
+author_email: seanmcgu@andrew.cmu.edu
+author_name: Sean McGuire
+custom_install: notebook
+include_docs: false
+package_name: lsdb_custom_graphs
+project_description: ''
+project_license: MIT
+project_name: lsdb-custom-graphs
+project_organization: smcguire-cmu
+python_versions:
+- '3.10'
+- '3.11'
+- '3.12'
+- '3.13'
