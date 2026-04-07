@@ -17,6 +17,11 @@ classifiers = [
 dynamic = ["version"]
 requires-python = ">=3.10"
 dependencies = [
+    "lsdb",
+    "bokeh",
+    "networkx",
+    "panel",
+    "jupyter_bokeh",
 ]
 
 [project.urls]
@@ -97,7 +102,7 @@ ignore = [
 [tool.mypy]
 python_version = "3.10"
 [tool.setuptools.package-data]
-lsdb_custom_graphs = ["py.typed"]
+lsdb_custom_graphs = ["py.typed", "visualisation/*.js"]
 
 [tool.coverage.run]
 omit=["src/lsdb_custom_graphs/_version.py"]
