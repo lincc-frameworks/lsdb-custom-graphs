@@ -125,6 +125,7 @@ def render_graph(
             "rect_height": [20] * n_nodes,
             "task_repr": all_reprs,
             "task_name": [G.nodes[n]["task_name"] for n in nodes],
+            "memory": all_memory,
         }
     )
     full_edge_source = ColumnDataSource(

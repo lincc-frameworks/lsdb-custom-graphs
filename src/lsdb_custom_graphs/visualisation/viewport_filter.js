@@ -14,9 +14,14 @@ const all_text_color = full_node.data['text_color'];
 const all_task_text_color = full_node.data['task_text_color'];
 const all_mem_text_color = full_node.data['mem_text_color'];
 const all_task_name = full_node.data['task_name'];
+const all_memory = full_node.data['memory'];
 
 const AGGREGATE_CELL_BACKGROUND = '#dddddd';
 const AGGREGATE_CELL_TEXT = '#000000';
+
+// Detect whether memory colour mode is currently active by comparing
+// the first node's 'color' to its 'task_color'. If they differ, we're in memory mode.
+const in_mem_mode = all_x.length > 0 && all_color[0] !== all_task_color[0];
 
 // Compute grid cell size in data coordinates.
 // Use aggregate box dimensions (120x40) plus padding (20x15) so
@@ -90,6 +95,8 @@ for (let c = 0; c < cell_keys.length; c++) {
         // Collect unique task names preserving insertion order, and map name->color
         const task_color_map = {};
         const node_labels = [];
+        // Track the node with the highest memory for mem-mode colouring
+        let max_mem = -Infinity, max_mem_idx = indices[0];
         for (let j = 0; j < indices.length; j++) {
             const i = indices[j];
             sum_x += all_x[i];
@@ -99,7 +106,13 @@ for (let c = 0; c < cell_keys.length; c++) {
                 task_color_map[tn] = all_task_color[i];
             }
             node_labels.push(all_label1[i]);
+            if (all_memory[i] > max_mem) {
+                max_mem = all_memory[i];
+                max_mem_idx = i;
+            }
         }
+        const agg_mem_color = all_mem_color[max_mem_idx];
+        const agg_mem_text_color = all_mem_text_color[max_mem_idx];
         const avg_x = sum_x / indices.length;
         const avg_y = sum_y / indices.length;
         cell_positions[key] = { x: avg_x, y: avg_y };
@@ -137,20 +150,22 @@ for (let c = 0; c < cell_keys.length; c++) {
         }
         tooltip += '</div>';
 
+        const agg_color = in_mem_mode ? agg_mem_color : AGGREGATE_CELL_BACKGROUND;
+        const agg_text_color = in_mem_mode ? agg_mem_text_color : AGGREGATE_CELL_TEXT;
         out_x.push(avg_x);
         out_y.push(avg_y);
-        out_color.push(AGGREGATE_CELL_BACKGROUND);
+        out_color.push(agg_color);
         out_task_color.push(AGGREGATE_CELL_BACKGROUND);
-        out_mem_color.push(AGGREGATE_CELL_BACKGROUND);
+        out_mem_color.push(agg_mem_color);
         out_label1.push(line1);
         out_label2.push(line2);
         out_y_off1.push(6);
         out_y_off2.push(-6);
         out_rect_h.push(40);
         out_repr.push(tooltip);
-        out_text_color.push(AGGREGATE_CELL_TEXT);
+        out_text_color.push(agg_text_color);
         out_task_text_color.push(AGGREGATE_CELL_TEXT);
-        out_mem_text_color.push(AGGREGATE_CELL_TEXT);
+        out_mem_text_color.push(agg_mem_text_color);
     }
 }
 
