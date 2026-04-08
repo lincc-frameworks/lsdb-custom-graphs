@@ -11,6 +11,7 @@ from bokeh.models import (
     ColorBar,
     ColumnDataSource,
     CustomJS,
+    CustomJSTickFormatter,
     HoverTool,
     LinearColorMapper,
     MultiLine,
@@ -24,6 +25,15 @@ from bokeh.palettes import Category20, Viridis256
 from bokeh.plotting import figure
 
 from .memory import estimate_task_memory, format_bytes
+
+
+def _contrast_color(hex_color: str) -> str:
+    """Return black or white text depending on background luminance."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    # Perceived luminance (ITU-R BT.601)
+    luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    return "#000000" if luminance > 128 else "#ffffff"
 
 
 def render_graph(
@@ -63,6 +73,7 @@ def render_graph(
 
     # Build full node data — x is column index, y is row position
     nodes = list(G.nodes())
+    n_nodes = len(nodes)
     all_x = [positions[n][0] for n in nodes]
     all_y = [positions[n][1] for n in nodes]
     all_task_colors = [color_map[G.nodes[n]["task_name"]] for n in nodes]
@@ -84,6 +95,9 @@ def render_graph(
             idx = int(255 * (mem - min_mem) / (max_mem - min_mem))
         all_mem_colors.append(Viridis256[min(idx, 255)])
 
+    all_task_text_colors = [_contrast_color(c) for c in all_task_colors]
+    all_mem_text_colors = [_contrast_color(c) for c in all_mem_colors]
+
     # Build full edge data with source/dest indices
     node_to_idx = {n: i for i, n in enumerate(nodes)}
     edge_src = []
@@ -100,8 +114,16 @@ def render_graph(
             "task_color": all_task_colors,
             "mem_color": all_mem_colors,
             "color": list(all_task_colors),
-            "label": all_labels,
+            "task_text_color": all_task_text_colors,
+            "mem_text_color": all_mem_text_colors,
+            "text_color": list(all_task_text_colors),
+            "label_line1": all_labels,
+            "label_line2": [""] * n_nodes,
+            "y_offset_line1": [0] * n_nodes,
+            "y_offset_line2": [0] * n_nodes,
+            "rect_height": [20] * n_nodes,
             "task_repr": all_reprs,
+            "task_name": [G.nodes[n]["task_name"] for n in nodes],
         }
     )
     full_edge_source = ColumnDataSource(
@@ -109,17 +131,25 @@ def render_graph(
     )
 
     # Initial data — show everything
-    init_edge_xs = [[all_x[s], all_x[d]] for s, d in zip(edge_src, edge_dst)]
+    # Compute right-side/left-side offsets in data coords for the initial zoom level
+    init_x_span = (max(all_x) + x_pad) - (min(all_x) - x_pad)
+    box_half_w_init = init_x_span * 60 / width
+
+    init_edge_xs = [[all_x[s] + box_half_w_init, all_x[d] - box_half_w_init] for s, d in zip(edge_src, edge_dst)]
     init_edge_ys = [[all_y[s], all_y[d]] for s, d in zip(edge_src, edge_dst)]
-    # Two arrowheads per edge at 25% and 75%, angle corrected for Bokeh's triangle orientation
+    # One arrowhead at midpoint per edge (all nodes visible initially)
     init_arrow_x = []
     init_arrow_y = []
     init_arrow_angle = []
     for s, d in zip(edge_src, edge_dst):
-        angle = math.atan2(all_y[d] - all_y[s], all_x[d] - all_x[s]) - math.pi / 2
-        init_arrow_x += [all_x[s] + 0.25 * (all_x[d] - all_x[s]), all_x[s] + 0.75 * (all_x[d] - all_x[s])]
-        init_arrow_y += [all_y[s] + 0.25 * (all_y[d] - all_y[s]), all_y[s] + 0.75 * (all_y[d] - all_y[s])]
-        init_arrow_angle += [angle, angle]
+        sx = all_x[s] + box_half_w_init
+        sy = all_y[s]
+        dx = all_x[d] - box_half_w_init
+        dy = all_y[d]
+        angle = math.atan2(dy - sy, dx - sx) - math.pi / 2
+        init_arrow_x.append(sx + 0.5 * (dx - sx))
+        init_arrow_y.append(sy + 0.5 * (dy - sy))
+        init_arrow_angle.append(angle)
 
     node_source = ColumnDataSource(
         data={
@@ -127,7 +157,15 @@ def render_graph(
             "task_color": list(all_task_colors),
             "mem_color": list(all_mem_colors),
             "color": list(all_task_colors),
-            "label": list(all_labels), "task_repr": list(all_reprs),
+            "task_text_color": list(all_task_text_colors),
+            "mem_text_color": list(all_mem_text_colors),
+            "text_color": list(all_task_text_colors),
+            "label_line1": list(all_labels),
+            "label_line2": [""] * n_nodes,
+            "y_offset_line1": [0] * n_nodes,
+            "y_offset_line2": [0] * n_nodes,
+            "rect_height": [20] * n_nodes,
+            "task_repr": list(all_reprs),
         }
     )
     edge_source = ColumnDataSource(data={"xs": init_edge_xs, "ys": init_edge_ys})
@@ -176,14 +214,14 @@ def render_graph(
         ),
     )
 
-    # Draw node rectangles (screen-space size)
+    # Draw node rectangles (screen-space size, height is data-driven for aggregates)
     rect_glyph = p.add_glyph(
         node_source,
         Rect(
             x="x",
             y="y",
             width=120,
-            height=20,
+            height="rect_height",
             width_units="screen",
             height_units="screen",
             fill_color="color",
@@ -192,16 +230,31 @@ def render_graph(
         ),
     )
 
-    # Draw node labels
+    # Draw node labels (two lines for aggregates)
     p.add_glyph(
         node_source,
         Text(
             x="x",
             y="y",
-            text="label",
+            text="label_line1",
+            text_color="text_color",
             text_align="center",
             text_baseline="middle",
             text_font_size="8pt",
+            y_offset="y_offset_line1",
+        ),
+    )
+    p.add_glyph(
+        node_source,
+        Text(
+            x="x",
+            y="y",
+            text="label_line2",
+            text_color="text_color",
+            text_align="center",
+            text_baseline="middle",
+            text_font_size="7pt",
+            y_offset="y_offset_line2",
         ),
     )
 
@@ -213,11 +266,16 @@ def render_graph(
     p.add_tools(hover)
 
     # Memory color bar (initially hidden)
+    js_dir = Path(__file__).parent
+    mem_tick_formatter = CustomJSTickFormatter(
+        code=(js_dir / "format_bytes_tick.js").read_text(),
+    )
     color_bar = ColorBar(
         color_mapper=mem_mapper,
         title="Memory",
         visible=False,
         width=15,
+        formatter=mem_tick_formatter,
     )
     p.add_layout(color_bar, "right")
 
@@ -231,50 +289,11 @@ def render_graph(
             "color_bar": color_bar,
             "btn": toggle_btn,
         },
-        code="""
-        const mode = btn.label === 'Color by Memory' ? 'memory' : 'task';
-
-        if (mode === 'memory') {
-            btn.label = 'Color by Task';
-            color_bar.visible = true;
-            // Switch visible source colors
-            const n = node_source.data['x'].length;
-            const new_colors = [];
-            for (let i = 0; i < n; i++) {
-                new_colors.push(node_source.data['mem_color'][i]);
-            }
-            node_source.data['color'] = new_colors;
-            // Switch full source colors
-            const fn = full_node.data['x'].length;
-            const new_full = [];
-            for (let i = 0; i < fn; i++) {
-                new_full.push(full_node.data['mem_color'][i]);
-            }
-            full_node.data['color'] = new_full;
-        } else {
-            btn.label = 'Color by Memory';
-            color_bar.visible = false;
-            const n = node_source.data['x'].length;
-            const new_colors = [];
-            for (let i = 0; i < n; i++) {
-                new_colors.push(node_source.data['task_color'][i]);
-            }
-            node_source.data['color'] = new_colors;
-            const fn = full_node.data['x'].length;
-            const new_full = [];
-            for (let i = 0; i < fn; i++) {
-                new_full.push(full_node.data['task_color'][i]);
-            }
-            full_node.data['color'] = new_full;
-        }
-        node_source.change.emit();
-        full_node.change.emit();
-        """,
+        code=(js_dir / "toggle_memory_color.js").read_text(),
     )
     toggle_btn.js_on_click(toggle_js)
 
     # JS callback for viewport filtering
-    js_path = Path(__file__).parent / "viewport_filter.js"
     callback = CustomJS(
         args={
             "node_source": node_source,
@@ -284,8 +303,10 @@ def render_graph(
             "full_edge": full_edge_source,
             "x_range": p.x_range,
             "y_range": p.y_range,
+            "plot_width": width,
+            "plot_height": height,
         },
-        code=js_path.read_text(),
+        code=(js_dir / "viewport_filter.js").read_text(),
     )
 
     p.x_range.js_on_change("start", callback)
