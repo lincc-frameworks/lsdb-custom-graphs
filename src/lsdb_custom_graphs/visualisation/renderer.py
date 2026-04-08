@@ -1,6 +1,5 @@
 """Bokeh renderer for Dask task graphs with viewport-based JS filtering."""
 
-import math
 from pathlib import Path
 
 import networkx as nx
@@ -23,6 +22,8 @@ from bokeh.models import (
 )
 from bokeh.palettes import Category20, Viridis256
 from bokeh.plotting import figure
+
+from bokeh.io import curdoc
 
 from .memory import estimate_task_memory, format_bytes
 
@@ -130,54 +131,31 @@ def render_graph(
         data={"src_idx": edge_src, "dst_idx": edge_dst}
     )
 
-    # Initial data — show everything
-    # Compute right-side/left-side offsets in data coords for the initial zoom level
-    init_x_span = (max(all_x) + x_pad) - (min(all_x) - x_pad)
-    box_half_w_init = init_x_span * 60 / width
-
-    init_edge_xs = [[all_x[s] + box_half_w_init, all_x[d] - box_half_w_init] for s, d in zip(edge_src, edge_dst)]
-    init_edge_ys = [[all_y[s], all_y[d]] for s, d in zip(edge_src, edge_dst)]
-    # One arrowhead at midpoint per edge (all nodes visible initially)
-    init_arrow_x = []
-    init_arrow_y = []
-    init_arrow_angle = []
-    for s, d in zip(edge_src, edge_dst):
-        sx = all_x[s] + box_half_w_init
-        sy = all_y[s]
-        dx = all_x[d] - box_half_w_init
-        dy = all_y[d]
-        angle = math.atan2(dy - sy, dx - sx) - math.pi / 2
-        init_arrow_x.append(sx + 0.5 * (dx - sx))
-        init_arrow_y.append(sy + 0.5 * (dy - sy))
-        init_arrow_angle.append(angle)
-
-    node_source = ColumnDataSource(
-        data={
-            "x": list(all_x), "y": list(all_y),
-            "task_color": list(all_task_colors),
-            "mem_color": list(all_mem_colors),
-            "color": list(all_task_colors),
-            "task_text_color": list(all_task_text_colors),
-            "mem_text_color": list(all_mem_text_colors),
-            "text_color": list(all_task_text_colors),
-            "label_line1": list(all_labels),
-            "label_line2": [""] * n_nodes,
-            "y_offset_line1": [0] * n_nodes,
-            "y_offset_line2": [0] * n_nodes,
-            "rect_height": [20] * n_nodes,
-            "task_repr": list(all_reprs),
-        }
-    )
-    edge_source = ColumnDataSource(data={"xs": init_edge_xs, "ys": init_edge_ys})
-    arrow_source = ColumnDataSource(
-        data={"x": init_arrow_x, "y": init_arrow_y, "angle": init_arrow_angle}
-    )
-
-    # Axis ranges
-    n_cols = max(all_x) + 1
     x_pad = 1
     y_pad = 2
-    x_range = Range1d(min(all_x) - x_pad, max(all_x) + x_pad)
+
+
+
+    # Start empty — the full_node_source data-change callback populates these on first sync.
+    node_source = ColumnDataSource(
+        data={
+            "x": [], "y": [],
+            "task_color": [], "mem_color": [], "color": [],
+            "task_text_color": [], "mem_text_color": [], "text_color": [],
+            "label_line1": [], "label_line2": [],
+            "y_offset_line1": [], "y_offset_line2": [],
+            "rect_height": [], "task_repr": [],
+        }
+    )
+    edge_source = ColumnDataSource(data={"xs": [], "ys": []})
+    arrow_source = ColumnDataSource(data={"x": [], "y": [], "angle": []})
+
+    # Axis ranges — x_range.start is offset by a tiny epsilon so that the
+    # DocumentReady callback can correct it, triggering the viewport filter
+    # js_on_change("start") handler before any user interaction.
+    n_cols = max(all_x) + 1
+    x_start = float(min(all_x) - x_pad)
+    x_range = Range1d(x_start + 1e-6, max(all_x) + x_pad)
     y_range = Range1d(min(all_y) - y_pad, max(all_y) + y_pad)
 
     # Two zoom tools in toolbar: vertical (default) and horizontal (click to switch)
@@ -313,6 +291,16 @@ def render_graph(
     p.x_range.js_on_change("end", callback)
     p.y_range.js_on_change("start", callback)
     p.y_range.js_on_change("end", callback)
+
+    # On document_ready, correct x_range.start back to its true value.
+    # This fires the js_on_change("start") callback above, running the viewport
+    # filter with fully-initialised models — before any user interaction.
+    # Must be registered on curdoc() rather than the plot for notebook embedding.
+    curdoc().js_on_event(
+        "document_ready",
+        CustomJS(args={"x_range": p.x_range, "x_start": x_start},
+                 code="x_range.start = x_start;"),
+    )
 
     layout = column(row(toggle_btn), p) if calculate_memory else p
     show(layout)

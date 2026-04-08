@@ -15,6 +15,9 @@ const all_task_text_color = full_node.data['task_text_color'];
 const all_mem_text_color = full_node.data['mem_text_color'];
 const all_task_name = full_node.data['task_name'];
 
+const AGGREGATE_CELL_BACKGROUND = '#dddddd';
+const AGGREGATE_CELL_TEXT = '#000000';
+
 // Compute grid cell size in data coordinates.
 // Use aggregate box dimensions (120x40) plus padding (20x15) so
 // aggregate boxes never overlap and always have visible gaps.
@@ -136,18 +139,18 @@ for (let c = 0; c < cell_keys.length; c++) {
 
         out_x.push(avg_x);
         out_y.push(avg_y);
-        out_color.push('#888888');
-        out_task_color.push('#888888');
-        out_mem_color.push('#888888');
+        out_color.push(AGGREGATE_CELL_BACKGROUND);
+        out_task_color.push(AGGREGATE_CELL_BACKGROUND);
+        out_mem_color.push(AGGREGATE_CELL_BACKGROUND);
         out_label1.push(line1);
         out_label2.push(line2);
         out_y_off1.push(6);
         out_y_off2.push(-6);
         out_rect_h.push(40);
         out_repr.push(tooltip);
-        out_text_color.push('#ffffff');
-        out_task_text_color.push('#ffffff');
-        out_mem_text_color.push('#ffffff');
+        out_text_color.push(AGGREGATE_CELL_TEXT);
+        out_task_text_color.push(AGGREGATE_CELL_TEXT);
+        out_mem_text_color.push(AGGREGATE_CELL_TEXT);
     }
 }
 
@@ -163,6 +166,20 @@ node_source.data = {
 };
 
 // Edge handling
+// box_half_w: data-space distance from node center to right/left edge at current zoom
+const box_half_w = (x1 - x0) * 60 / plot_width;
+
+// Scale factors for converting data-space vectors to screen-space for angle computation.
+// Screen y is inverted relative to data y, so dy_screen = -dy_data * y_scale.
+const x_scale = plot_width / (x1 - x0);
+const y_scale = plot_height / (y1 - y0);
+
+function edge_angle(sx, sy, dx, dy) {
+    const scr_dx = (dx - sx) * x_scale;
+    const scr_dy = -(dy - sy) * y_scale;  // invert: data y-up = screen y-down
+    return Math.atan2(scr_dy, scr_dx) - Math.PI / 2;
+}
+
 const src = full_edge.data['src_idx'];
 const dst = full_edge.data['dst_idx'];
 const edge_xs = [];
@@ -177,44 +194,76 @@ if (has_aggregation) {
         const src_key = node_cell_key[src[i]];
         const dst_key = node_cell_key[dst[i]];
         if (src_key === dst_key) continue;
-        if (!cell_positions[src_key] || !cell_positions[dst_key]) continue;
+
+        const src_pos = cell_positions[src_key];
+        const dst_pos = cell_positions[dst_key];
+
+        // Skip only if both endpoints are off-screen
+        if (!src_pos && !dst_pos) continue;
+
+        // y-range check using raw positions for off-screen endpoints
+        const sy_raw = all_y[src[i]];
+        const dy_raw = all_y[dst[i]];
+        if ((sy_raw < y0 || sy_raw > y1) && (dy_raw < y0 || dy_raw > y1)) continue;
 
         const edge_id = src_key + '->' + dst_key;
         if (seen_edges.has(edge_id)) continue;
         seen_edges.add(edge_id);
 
-        const sx = cell_positions[src_key].x;
-        const sy = cell_positions[src_key].y;
-        const dx = cell_positions[dst_key].x;
-        const dy = cell_positions[dst_key].y;
+        // Use aggregate position if in-viewport, raw node position otherwise
+        const sx = (src_pos ? src_pos.x : all_x[src[i]]) + box_half_w;
+        const sy = src_pos ? src_pos.y : sy_raw;
+        const dx = (dst_pos ? dst_pos.x : all_x[dst[i]]) - box_half_w;
+        const dy = dst_pos ? dst_pos.y : dy_raw;
 
         edge_xs.push([sx, dx]);
         edge_ys.push([sy, dy]);
 
-        const angle = Math.atan2(dy - sy, dx - sx) - Math.PI / 2;
-        arrow_x.push(sx + 0.5 * (dx - sx));
-        arrow_y.push(sy + 0.5 * (dy - sy));
+        const angle = edge_angle(sx, sy, dx, dy);
+        // Arrow near the visible endpoint; midpoint if both visible
+        let frac;
+        if (src_pos && dst_pos) frac = 0.5;
+        else if (src_pos) frac = 0.2;
+        else frac = 0.8;
+
+        arrow_x.push(sx + frac * (dx - sx));
+        arrow_y.push(sy + frac * (dy - sy));
         arrow_angle.push(angle);
     }
 } else {
     for (let i = 0; i < src.length; i++) {
-        const sy = all_y[src[i]];
-        const dy = all_y[dst[i]];
-        if ((sy >= y0 && sy <= y1) || (dy >= y0 && dy <= y1)) {
-            const sx = all_x[src[i]];
-            const dx = all_x[dst[i]];
-            edge_xs.push([sx, dx]);
-            edge_ys.push([sy, dy]);
+        const sxc = all_x[src[i]];
+        const syc = all_y[src[i]];
+        const dxc = all_x[dst[i]];
+        const dyc = all_y[dst[i]];
 
-            const angle = Math.atan2(dy - sy, dx - sx) - Math.PI / 2;
-            arrow_x.push(sx + 0.25 * (dx - sx));
-            arrow_y.push(sy + 0.25 * (dy - sy));
-            arrow_angle.push(angle);
+        // Show edge if either endpoint's y is in range (preserves off-screen connections)
+        if ((syc < y0 || syc > y1) && (dyc < y0 || dyc > y1)) continue;
 
-            arrow_x.push(sx + 0.75 * (dx - sx));
-            arrow_y.push(sy + 0.75 * (dy - sy));
-            arrow_angle.push(angle);
-        }
+        // Full x+y visibility used only for arrow placement
+        const src_vis = sxc >= x0 && sxc <= x1 && syc >= y0 && syc <= y1;
+        const dst_vis = dxc >= x0 && dxc <= x1 && dyc >= y0 && dyc <= y1;
+
+        // Connect right side of source to left side of destination
+        const sx = sxc + box_half_w;
+        const sy = syc;
+        const dx = dxc - box_half_w;
+        const dy = dyc;
+
+        edge_xs.push([sx, dx]);
+        edge_ys.push([sy, dy]);
+
+        const angle = edge_angle(sx, sy, dx, dy);
+
+        // Arrow near the visible endpoint; midpoint if both visible
+        let frac;
+        if (src_vis && dst_vis) frac = 0.5;
+        else if (src_vis) frac = 0.2;
+        else frac = 0.8;
+
+        arrow_x.push(sx + frac * (dx - sx));
+        arrow_y.push(sy + frac * (dy - sy));
+        arrow_angle.push(angle);
     }
 }
 
