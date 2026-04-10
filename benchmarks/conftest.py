@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import lsdb
+from lsdb_custom_graphs import lsdb
 from pytest import fixture
 
 

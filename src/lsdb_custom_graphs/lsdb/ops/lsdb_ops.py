@@ -1,13 +1,19 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from dask._task_spec import Task, TaskRef, cull
 from dask.tokenize import _tokenize_deterministic
 from dask.utils import funcname
 
 import pandas as pd
 from hats import HealpixPixel
-from jupyter_server.services.kernels.connection import base
 from pyarrow.lib import Sequence
 
 from lsdb_custom_graphs.lsdb.ops.operation import HealpixGraph, Operation
+
+if TYPE_CHECKING:
+    from lsdb_custom_graphs.lsdb.healpix_dataset import HealpixDataset
 
 
 class FromHealpixMap(Operation):
@@ -105,12 +111,13 @@ class SelectPixels(Operation):
 
 
 class AlignAndApply(Operation):
-    def __init__(self, input_ops: Sequence[Operation], pixel_lists: Sequence[Sequence[HealpixPixel | None]],
+    def __init__(self, input_cats: Sequence[HealpixDataset],
+                 pixel_lists: Sequence[Sequence[HealpixPixel | None]],
                  func,
                  meta, output_pixels: Sequence[HealpixPixel], *args, **kwargs):
-        self.input_ops = input_ops
+        self.input_cats = input_cats
         self.pixel_lists = pixel_lists
-        if len(self.input_ops) != len(self.pixel_lists):
+        if len(self.input_cats) != len(self.pixel_lists):
             raise ValueError("Inccorect Align and Apply Setup")
         self.func = func
         self._meta = meta
@@ -123,12 +130,19 @@ class AlignAndApply(Operation):
         return self._meta
 
     def build(self) -> HealpixGraph:
-        graphs = [op.build() if op is not None else None for op in self.input_ops]
-        metas = [op.meta if op is not None else None for op in self.input_ops]
+        input_ops = [cat.operation if cat is not None else None for cat in self.input_cats]
+        graphs = [op.build() if op is not None else None for op in input_ops]
+        metas = [op.meta if op is not None else None for op in input_ops]
+        catalog_infos = [cat.hc_structure.catalog_info if cat is not None else None for cat in
+                         self.input_cats]
         graph = {}
+        pixel_key_map = {}
         for g in graphs:
-            graph = graphs | g
-        for pixels in zip(*self.pixel_lists):
+            if g is not None:
+                graph = graph | g.graph
+        for i, all_pixels in enumerate(zip(self.output_pixels, *self.pixel_lists)):
+            output_pixel = all_pixels[0]
+            pixels = all_pixels[1:]
             task_refs = []
             for g, m, p in zip(graphs, metas, pixels):
                 if g is None:
@@ -137,3 +151,12 @@ class AlignAndApply(Operation):
                     task_refs.append(m)
                 else:
                     task_refs.append(TaskRef(g.pixel_to_key_map[p]))
+            args = task_refs + list(pixels) + catalog_infos + list(self.args)
+            kwargs = self.kwargs
+            key_name = f"{funcname(self.func)}-{_tokenize_deterministic(args, kwargs)}"
+            key = (key_name, i)
+            task = Task(key, self.func, *args, **kwargs)
+            graph[key] = task
+            pixel_key_map[output_pixel] = key
+        culled_graph = cull(graph, list(pixel_key_map.values()))
+        return HealpixGraph(culled_graph, pixel_key_map)

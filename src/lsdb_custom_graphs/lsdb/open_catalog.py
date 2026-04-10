@@ -213,11 +213,15 @@ def _update_hc_structure(catalog: HealpixDataset):
     """Create the modified schema of the catalog after all the processing on the `read_hats` call"""
     # pylint: disable=protected-access
     default_columns = None
+
+    def exploded_columns(df):
+        return df.columns.to_list() + df.get_subcolumns()
+
     if catalog.hc_structure.catalog_info.default_columns is not None:
         default_columns = [
             col
             for col in catalog.hc_structure.catalog_info.default_columns
-            if col in catalog.operation.meta.exploded_columns
+            if col in exploded_columns(catalog.operation.meta)
         ]
     return catalog._create_modified_hc_structure(
         updated_schema=get_arrow_schema(catalog.operation.meta),
@@ -241,7 +245,7 @@ def _load_object_catalog(hc_catalog, config):
         if len(pyarrow_filter) > 0 and not config.filters:
             config.filters = pyarrow_filter
     operation = _load_operation(hc_catalog, config)
-    catalog = HealpixDataset(operation, hc_catalog)
+    catalog = Catalog(operation, hc_catalog)
     if config.search_filter is not None:
         catalog = catalog.search(config.search_filter)
     if config.margin_cache is not None:
