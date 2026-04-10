@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 from dask._task_spec import Task, TaskRef, cull
@@ -25,6 +26,14 @@ class FromHealpixMap(Operation):
         self.kwargs = kwargs
 
     @property
+    def name(self) -> str:
+        return f"FromHealpixMap({funcname(self.func)})"
+
+    @functools.cached_property
+    def key_name(self) -> str:
+        return f"{funcname(self.func)}-{_tokenize_deterministic(*self.args, self.kwargs)}"
+
+    @property
     def meta(self) -> pd.DataFrame:
         if self._meta is not None:
             return self._meta
@@ -38,8 +47,7 @@ class FromHealpixMap(Operation):
         graph = {}
         pixel_keys = {}
         for i, pixel in enumerate(self.pixels):
-            key_name = f"{funcname(self.func)}-{_tokenize_deterministic(pixel, self.args, self.kwargs)}"
-            key = (key_name, i)
+            key = (self.key_name, i)
             task = Task(key, self.func, pixel, *self.args, **self.kwargs)
             graph[key] = task
             pixel_keys[pixel] = key
@@ -66,6 +74,14 @@ class MapPartitions(Operation):
         self.kwargs = kwargs
 
     @property
+    def name(self) -> str:
+        return f"MapPartitions({funcname(self.func)})"
+
+    @functools.cached_property
+    def key_name(self) -> str:
+        return f"{funcname(self.func)}-{_tokenize_deterministic(self.base.meta, self.base.name, self.args, self.kwargs)}"
+
+    @property
     def meta(self) -> pd.DataFrame:
         if self._meta is not None:
             return self._meta
@@ -81,8 +97,7 @@ class MapPartitions(Operation):
             args = self.args
             if self.include_pixel:
                 args = (HealpixPixel(*pixel),) + args
-            key_name = f"{funcname(self.func)}-{_tokenize_deterministic(prev_key, args, self.kwargs)}"
-            key = (key_name, i)
+            key = (self.key_name, i)
             task = Task(key, self.func, TaskRef(prev_key), *args, **self.kwargs)
             graph[key] = task
             pixel_keys[pixel] = key
@@ -93,6 +108,14 @@ class SelectPixels(Operation):
     def __init__(self, base: Operation, pixels: Sequence[HealpixPixel]):
         self.base = base
         self.pixels = pixels
+
+    @property
+    def name(self) -> str:
+        return f"SelectPixels"
+
+    @functools.cached_property
+    def key_name(self) -> str:
+        return f"select_pixels-{_tokenize_deterministic(self.base.meta, self.base.name, *self.pixels)}"
 
     @property
     def meta(self) -> pd.DataFrame:
@@ -126,15 +149,36 @@ class AlignAndApply(Operation):
         self.kwargs = kwargs
 
     @property
+    def input_ops(self):
+        return [cat.operation if cat is not None else None for cat in self.input_cats]
+
+    @property
+    def metas(self):
+        return [op.meta if op is not None else None for op in self.input_ops]
+
+    @property
+    def catalog_infos(self):
+        return [cat.hc_structure.catalog_info if cat is not None else None for cat in
+                self.input_cats]
+
+    @property
+    def name(self) -> str:
+        return f"AlignAndApply({funcname(self.func)})"
+
+    @functools.cached_property
+    def key_name(self) -> str:
+        names = [op.name if op is not None else None for op in self.input_ops]
+        return f"{funcname(self.func)}-{_tokenize_deterministic(*self.metas, *names, *self.pixel_lists, *self.catalog_infos, *self.args, self.kwargs)}"
+
+    @property
     def meta(self) -> pd.DataFrame:
         return self._meta
 
     def build(self) -> HealpixGraph:
-        input_ops = [cat.operation if cat is not None else None for cat in self.input_cats]
+        input_ops = self.input_ops
         graphs = [op.build() if op is not None else None for op in input_ops]
-        metas = [op.meta if op is not None else None for op in input_ops]
-        catalog_infos = [cat.hc_structure.catalog_info if cat is not None else None for cat in
-                         self.input_cats]
+        metas = self.metas
+        catalog_infos = self.catalog_infos
         graph = {}
         pixel_key_map = {}
         for g in graphs:
@@ -153,8 +197,7 @@ class AlignAndApply(Operation):
                     task_refs.append(TaskRef(g.pixel_to_key_map[p]))
             args = task_refs + list(pixels) + catalog_infos + list(self.args)
             kwargs = self.kwargs
-            key_name = f"{funcname(self.func)}-{_tokenize_deterministic(args, kwargs)}"
-            key = (key_name, i)
+            key = (self.key_name, i)
             task = Task(key, self.func, *args, **kwargs)
             graph[key] = task
             pixel_key_map[output_pixel] = key

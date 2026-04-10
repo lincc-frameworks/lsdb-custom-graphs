@@ -16,6 +16,17 @@ class HealpixGraph:
 
 
 class Operation(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The name of the Task"""
+        pass
+
+    @property
+    @abstractmethod
+    def key_name(self) -> str:
+        pass
+
     @abstractmethod
     def build(self) -> HealpixGraph:
         """Returns the task graph for this operation, where each node corresponds to a HEALPix pixel"""
@@ -26,3 +37,6 @@ class Operation(ABC):
     def meta(self) -> pd.DataFrame:
         """Returns the metadata for the output of this operation"""
         pass
+
+    def __repr__(self):
+        return self.name
