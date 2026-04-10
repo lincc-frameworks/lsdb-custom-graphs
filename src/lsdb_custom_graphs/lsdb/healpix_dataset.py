@@ -1,17 +1,38 @@
-from typing import Sequence, Self
+from typing import Callable, Sequence, Self
 
 from dask import threaded
 from dask.base import get_scheduler
 from hats.catalog.healpix_dataset.healpix_dataset import HealpixDataset as HCHealpixDataset
 import numpy as np
 import pandas as pd
+import nested_pandas as npd
 from dask.dataframe.core import _repr_data_series
 from hats import HealpixPixel
 from hats.pixel_math.healpix_pixel_function import get_pixel_argsort
 
-from lsdb_custom_graphs.lsdb.open_catalog import get_arrow_schema
-from lsdb_custom_graphs.lsdb.ops.lsdb_ops import MapPartitions
+import pyarrow as pa
+from lsdb.core.search.abstract_search import AbstractSearch
+
+from lsdb_custom_graphs.lsdb.ops.lsdb_ops import MapPartitions, SelectPixels
 from lsdb_custom_graphs.lsdb.ops.operation import Operation
+from lsdb_custom_graphs.lsdb.partition_indexer import PartitionIndexer
+
+
+def get_arrow_schema(df) -> pa.Schema:
+    """Constructs the pyarrow schema from the meta of a Dask DataFrame.
+
+    Parameters
+    ----------
+    ddf : dd.DataFrame
+        A Dask DataFrame.
+
+    Returns
+    -------
+    pa.Schema
+        The arrow schema for the provided Dask DataFrame.
+    """
+    # pylint: disable=protected-access
+    return pa.Schema.from_pandas(df).remove_metadata()
 
 
 class HealpixDataset:
@@ -156,11 +177,94 @@ class HealpixDataset:
         hc_structure = self._create_modified_hc_structure(
             hc_structure=hc_structure, updated_schema=updated_schema, **updated_catalog_info_params
         )
-        return self.__class__(op, hc_structure, loading_config=self.loading_config)
+        return self.__class__(op, hc_structure)
 
     def map_partitions(self, func, *args, meta=None, include_pixel=False, **kwargs):
-        new_op = MapPartitions(self.operation, func, args, meta=meta, include_pixel=include_pixel, **kwargs)
+        new_op = MapPartitions(self.operation, func, *args, meta=meta, include_pixel=include_pixel, **kwargs)
         return self._create_updated_dataset(op=new_op)
+
+    def __getitem__(self, item: str | list[str]) -> Self:
+        """Select a column or columns from the catalog, always returning a catalog (not a Series)."""
+        columns = [item] if isinstance(item, str) else list(item)
+        new_op = MapPartitions(self.operation, pd.DataFrame.__getitem__, columns)
+        return self._create_updated_dataset(op=new_op)
+
+    def query(self, expr: str) -> Self:
+        """Filters catalog using a pandas query expression.
+
+        Parameters
+        ----------
+        expr : str
+            Query expression to evaluate. The column names that are not valid Python
+            variables names should be wrapped in backticks, and any variable values can be
+            injected using f-strings. The use of '@' to reference variables is not supported.
+            More information about pandas query strings is available
+            `here <https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.query.html>`__.
+
+        Returns
+        -------
+        Self
+            A catalog that contains the data from the original catalog that complies
+            with the query expression.
+        """
+        return self.map_partitions(npd.NestedFrame.query, expr)
+
+    def drop(self, columns: str | list[str], errors: str = "raise") -> Self:
+        """Drop specified columns from the catalog.
+
+        Parameters
+        ----------
+        columns : single label or list-like
+            Column labels to drop.
+        errors : {'ignore', 'raise'}, default 'raise'
+            If 'ignore', suppress error and only existing labels are dropped.
+
+        Returns
+        -------
+        Self
+            A catalog containing all columns except for those specified.
+        """
+        return self.map_partitions(npd.NestedFrame.drop, columns=columns, errors=errors)
+
+    def rename(self, columns: dict | Callable) -> Self:
+        """Renames catalog columns (not indices) using a dictionary or function mapping.
+
+        Parameters
+        ----------
+        columns : dict-like or function
+            Transformations to apply to column names.
+
+        Returns
+        -------
+        Self
+            A catalog that contains the data from the original catalog with renamed columns.
+        """
+        updated_params = {}
+        meta = self.operation.meta
+        ra_col = self.hc_structure.catalog_info.ra_column
+        dec_col = self.hc_structure.catalog_info.dec_column
+        if ra_col in meta.columns:
+            new_ra = meta[[ra_col]].rename(columns=columns).columns[0]
+            if new_ra != ra_col:
+                updated_params["ra_column"] = new_ra
+        if dec_col in meta.columns:
+            new_dec = meta[[dec_col]].rename(columns=columns).columns[0]
+            if new_dec != dec_col:
+                updated_params["dec_column"] = new_dec
+        new_cat = self.map_partitions(npd.NestedFrame.rename, columns=columns)
+        return new_cat._create_updated_dataset(updated_catalog_info_params=updated_params)
+
+    def search(self, search: AbstractSearch):
+        filtered_cat = search.filter_hc_catalog(self.hc_structure)
+        filtered_pixels = filtered_cat.get_healpix_pixels()
+        filtered_op = SelectPixels(self.operation, filtered_pixels)
+        if search.fine:
+            filtered_op = MapPartitions(filtered_op, search.search_points, filtered_cat.catalog_info)
+        return self._create_updated_dataset(filtered_op, hc_structure=filtered_cat)
+
+    @property
+    def partitions(self):
+        return PartitionIndexer(self)
 
     def compute(self):
         schedule = get_scheduler()

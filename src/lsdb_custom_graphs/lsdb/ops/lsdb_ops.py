@@ -1,9 +1,11 @@
-from dask._task_spec import Task
+from dask._task_spec import Task, TaskRef, cull
 from dask.tokenize import _tokenize_deterministic
 from dask.utils import funcname
 
 import pandas as pd
 from hats import HealpixPixel
+from jupyter_server.services.kernels.connection import base
+from pyarrow.lib import Sequence
 
 from lsdb_custom_graphs.lsdb.ops.operation import HealpixGraph, Operation
 
@@ -62,7 +64,7 @@ class MapPartitions(Operation):
         if self._meta is not None:
             return self._meta
         else:
-            return map_parts_meta(self.func, self.base.meta(), *self.args, include_pixel=self.include_pixel,
+            return map_parts_meta(self.func, self.base.meta, *self.args, include_pixel=self.include_pixel,
                                   **self.kwargs)
 
     def build(self) -> HealpixGraph:
@@ -75,7 +77,28 @@ class MapPartitions(Operation):
                 args = (HealpixPixel(*pixel),) + args
             key_name = f"{funcname(self.func)}-{_tokenize_deterministic(prev_key, args, self.kwargs)}"
             key = (key_name, i)
-            task = Task(key, self.func, prev_key, *args, **self.kwargs)
+            task = Task(key, self.func, TaskRef(prev_key), *args, **self.kwargs)
             graph[key] = task
             pixel_keys[pixel] = key
         return HealpixGraph(graph, pixel_keys)
+
+
+class SelectPixels(Operation):
+    def __init__(self, base: Operation, pixels: Sequence[HealpixPixel]):
+        self.base = base
+        self.pixels = pixels
+
+    @property
+    def meta(self) -> pd.DataFrame:
+        return self.base.meta
+
+    def build(self) -> HealpixGraph:
+        previous = self.base.build()
+        selected_pixels = self.pixels
+        for p in selected_pixels:
+            if p not in previous.pixel_to_key_map:
+                raise ValueError(f"Selected Pixel {p} not found in operation")
+        selected_keys = [previous.pixel_to_key_map[p] for p in selected_pixels]
+        culled_graph = cull(previous.graph, selected_keys)
+        pixel_keys = {p: k for p, k in zip(selected_pixels, selected_keys)}
+        return HealpixGraph(culled_graph, pixel_keys)

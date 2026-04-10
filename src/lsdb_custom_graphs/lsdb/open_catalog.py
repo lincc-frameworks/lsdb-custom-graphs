@@ -20,7 +20,9 @@ from upath import UPath
 from lsdb.core.search.abstract_search import AbstractSearch
 from lsdb.loaders.hats.hats_loading_config import HatsLoadingConfig
 
-from lsdb_custom_graphs.lsdb.healpix_dataset import HealpixDataset
+from lsdb_custom_graphs.lsdb.catalog import Catalog
+from lsdb_custom_graphs.lsdb.healpix_dataset import HealpixDataset, get_arrow_schema
+from lsdb_custom_graphs.lsdb.margin_catalog import MarginCatalog
 
 MAX_PYARROW_FILTERS = 10
 
@@ -189,6 +191,8 @@ def _load_catalog(hc_catalog: hc.catalog.Dataset, config: HatsLoadingConfig) -> 
 
     if catalog_type in (CatalogType.OBJECT, CatalogType.SOURCE):
         catalog = _load_object_catalog(hc_catalog, config)
+    elif catalog_type == CatalogType.MARGIN:
+        catalog = _load_margin_catalog(hc_catalog, config)
     else:
         raise NotImplementedError(f"Cannot load catalog of type {catalog_type}")
 
@@ -200,8 +204,8 @@ def _load_catalog(hc_catalog: hc.catalog.Dataset, config: HatsLoadingConfig) -> 
         raise ValueError("The selected sky region has no coverage")
 
     catalog.hc_structure = _update_hc_structure(catalog)
-    # if isinstance(catalog, Catalog) and catalog.margin is not None:
-    #     catalog.margin.hc_structure = _update_hc_structure(catalog.margin)
+    if isinstance(catalog, Catalog) and catalog.margin is not None:
+        catalog.margin.hc_structure = _update_hc_structure(catalog.margin)
     return catalog
 
 
@@ -240,12 +244,31 @@ def _load_object_catalog(hc_catalog, config):
     catalog = HealpixDataset(operation, hc_catalog)
     if config.search_filter is not None:
         catalog = catalog.search(config.search_filter)
-    # if config.margin_cache is not None:
-    #     margin_hc_catalog = hc.read_hats(config.margin_cache, single_catalog=True, read_moc=False)
-    #     margin = _load_margin_catalog(margin_hc_catalog, config)
-    #     _validate_margin_catalog(margin, catalog)
-    #     catalog.margin = margin
+    if config.margin_cache is not None:
+        margin_hc_catalog = hc.read_hats(config.margin_cache, single_catalog=True, read_moc=False)
+        margin = _load_margin_catalog(margin_hc_catalog, config)
+        catalog.margin = margin
     return catalog
+
+
+def _load_margin_catalog(hc_catalog, config):
+    """Load a catalog from the configuration specified when the loader was created
+
+    Returns
+    -------
+    MarginCatalog
+        Catalog object with data from the source given at loader initialization
+    """
+    if config.search_filter:
+        hc_catalog = config.search_filter.filter_hc_catalog(hc_catalog)
+        pyarrow_filter = _generate_pyarrow_filters_from_moc(hc_catalog)
+        if len(pyarrow_filter) > 0 and not config.filters:
+            config.filters = pyarrow_filter
+    operation = _load_operation(hc_catalog, config)
+    margin = MarginCatalog(operation, hc_catalog)
+    if config.search_filter is not None:
+        margin = margin.search(config.search_filter)
+    return margin
 
 
 def _generate_pyarrow_filters_from_moc(filtered_catalog):
@@ -278,23 +301,6 @@ def _generate_pyarrow_filters_from_moc(filtered_catalog):
         for hpx_range in depth_array:
             pyarrow_filter.append([(healpix_column, ">=", hpx_range[0]), (healpix_column, "<", hpx_range[1])])
     return pyarrow_filter
-
-
-def get_arrow_schema(df) -> pa.Schema:
-    """Constructs the pyarrow schema from the meta of a Dask DataFrame.
-
-    Parameters
-    ----------
-    ddf : dd.DataFrame
-        A Dask DataFrame.
-
-    Returns
-    -------
-    pa.Schema
-        The arrow schema for the provided Dask DataFrame.
-    """
-    # pylint: disable=protected-access
-    return pa.Schema.from_pandas(df).remove_metadata()
 
 
 def _load_dask_meta_schema(hc_catalog, config) -> npd.NestedFrame:

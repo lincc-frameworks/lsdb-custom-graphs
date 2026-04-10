@@ -30,16 +30,16 @@ def test_gaia_ztf_xmatch_lazy(gaia, ztf, lbench):
 
 @pytest.mark.benchmark(min_rounds=1)
 @pytest.mark.parametrize("n_partitions", [1])
-def test_gaia_ztf_xmatch(gaia, ztf, lbench_dask_collection, n_partitions):
-    xmatch = gaia.crossmatch(ztf).partitions[:n_partitions].map_partitions(
+def test_gaia_des_xmatch(gaia, des, lbench_dask_collection, n_partitions):
+    xmatch = gaia.crossmatch(des).partitions[:n_partitions].map_partitions(
         lambda df: df.head(1))
     lbench_dask_collection(xmatch._ddf)
 
 
 @pytest.mark.parametrize("n_partitions", [1, 10])
-def test_gaia_ztf_xmatch_cols(gaia_dir, ztf_dir, lbench_dask_collection, n_partitions):
+def test_gaia_ztf_xmatch_cols(gaia_dir, des_dir, lbench_dask_collection, n_partitions):
     gaia = lsdb.open_catalog(gaia_dir, columns=["ra", "dec"])
-    ztf = lsdb.open_catalog(ztf_dir, columns=["objra", "objdec"])
-    xmatch = gaia.crossmatch(ztf).partitions[:n_partitions].map_partitions(
+    des = lsdb.open_catalog(des_dir, columns=["RA", "DEC"])
+    xmatch = gaia.crossmatch(des).partitions[:n_partitions].map_partitions(
         lambda df: df.head(1))
     lbench_dask_collection(xmatch._ddf)
