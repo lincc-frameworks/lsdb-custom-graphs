@@ -1,4 +1,3 @@
-
 [project]
 name = "lsdb-custom-graphs"
 license = "MIT"
@@ -105,4 +104,4 @@ python_version = "3.10"
 lsdb_custom_graphs = ["py.typed", "visualisation/*.js"]
 
 [tool.coverage.run]
-omit=["src/lsdb_custom_graphs/_version.py"]
+omit = ["src/lsdb_custom_graphs/_version.py"]

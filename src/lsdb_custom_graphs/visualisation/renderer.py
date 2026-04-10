@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import networkx as nx
-from bokeh.io import output_notebook, show
+from bokeh.io import curdoc, output_notebook, show
 from bokeh.layouts import column, row
 from bokeh.models import (
     Button,
@@ -22,8 +22,6 @@ from bokeh.models import (
 )
 from bokeh.palettes import Category20, Viridis256
 from bokeh.plotting import figure
-
-from bokeh.io import curdoc
 
 from .memory import estimate_task_memory, format_bytes
 
