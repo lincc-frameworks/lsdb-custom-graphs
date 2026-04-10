@@ -102,3 +102,38 @@ class SelectPixels(Operation):
         culled_graph = cull(previous.graph, selected_keys)
         pixel_keys = {p: k for p, k in zip(selected_pixels, selected_keys)}
         return HealpixGraph(culled_graph, pixel_keys)
+
+
+class AlignAndApply(Operation):
+    def __init__(self, input_ops: Sequence[Operation], pixel_lists: Sequence[Sequence[HealpixPixel | None]],
+                 func,
+                 meta, output_pixels: Sequence[HealpixPixel], *args, **kwargs):
+        self.input_ops = input_ops
+        self.pixel_lists = pixel_lists
+        if len(self.input_ops) != len(self.pixel_lists):
+            raise ValueError("Inccorect Align and Apply Setup")
+        self.func = func
+        self._meta = meta
+        self.output_pixels = output_pixels
+        self.args = args
+        self.kwargs = kwargs
+
+    @property
+    def meta(self) -> pd.DataFrame:
+        return self._meta
+
+    def build(self) -> HealpixGraph:
+        graphs = [op.build() if op is not None else None for op in self.input_ops]
+        metas = [op.meta if op is not None else None for op in self.input_ops]
+        graph = {}
+        for g in graphs:
+            graph = graphs | g
+        for pixels in zip(*self.pixel_lists):
+            task_refs = []
+            for g, m, p in zip(graphs, metas, pixels):
+                if g is None:
+                    task_refs.append(None)
+                elif p is None or p not in g.pixel_to_key_map:
+                    task_refs.append(m)
+                else:
+                    task_refs.append(TaskRef(g.pixel_to_key_map[p]))
