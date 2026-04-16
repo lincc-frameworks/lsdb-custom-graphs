@@ -6,7 +6,10 @@ from hats.catalog.healpix_dataset.healpix_dataset import HealpixDataset as HCHea
 import numpy as np
 import pandas as pd
 import nested_pandas as npd
+import dask.dataframe as dd
 from dask.dataframe.core import _repr_data_series
+from dask.optimization import cull
+from dask.delayed import Delayed
 from hats import HealpixPixel
 from hats.pixel_math.healpix_pixel_function import get_pixel_argsort
 
@@ -273,3 +276,31 @@ class HealpixDataset:
         healpix_graph = self.operation.build()
         result = schedule(healpix_graph.graph, healpix_graph.keys)
         return pd.concat(result)
+
+    def to_dask(self, optimize_graph=False):
+        """Converts to a lsdb.nested Dask DataFrame
+
+        Parameters
+        ----------
+        optimize_graph : bool, default False
+            Whether to perform graph optimization before creating the
+            Dask DataFrame. By default False, as it should not be necessary in
+            most cases.
+        """
+        build = self.operation.build()
+        graph = build.graph
+        meta = self.operation.meta
+        keys = build.keys
+
+        graph_delayed = [Delayed(key, graph) for key in keys]
+
+        if not optimize_graph:
+            return dd.from_delayed(graph_delayed, meta=meta)
+
+        # I don't know if we will actually ever need to do this
+        shared_graph = dict(graph_delayed[0].__dask_graph__())
+        optimized_graph = []
+        for d in graph_delayed:
+            culled_graph, _ = cull(shared_graph, list(d.__dask_keys__()))
+            optimized_graph.append(Delayed(d.key, culled_graph))
+        return dd.from_delayed(optimized_graph, meta=meta)
