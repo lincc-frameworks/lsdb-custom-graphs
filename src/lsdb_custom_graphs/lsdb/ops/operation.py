@@ -40,11 +40,9 @@ class HealpixGraph:
         return list(self.pixel_to_key_map.values())
 
 
-class Operation(ABC):
+class _OperationBase(ABC):
     projection_handlers: dict[type[Projection], Callable] = {}
     projection_emitters: dict[type[Projection], Callable] = {}
-
-    allow_column_projection_passthrough = False
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -69,6 +67,10 @@ class Operation(ABC):
                 new_projection_emitters[projection_type] = method
         cls.projection_handlers.update(new_projection_handlers)
         cls.projection_emitters.update(new_projection_emitters)
+
+
+class Operation(_OperationBase):
+    allow_column_projection_passthrough = False
 
     @property
     @abstractmethod
@@ -126,6 +128,9 @@ class Operation(ABC):
         if handler is None:
             return self, None
         return handler(self, projection)
+
+    def optimize(self) -> Self:
+        return self.handle_projections([])
 
     def __repr__(self):
         return self.name

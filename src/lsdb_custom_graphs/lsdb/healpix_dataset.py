@@ -298,11 +298,12 @@ class HealpixDataset:
     def partitions(self):
         return PartitionIndexer(self)
 
-    def compute(self):
+    def compute(self, optimize=True):
         schedule = get_scheduler()
         if schedule is None:
             schedule = threaded.get
-        healpix_graph = self.operation.build()
+        op = self.operation.optimize() if optimize else self.operation
+        healpix_graph = op.build()
         result = schedule(healpix_graph.graph, healpix_graph.keys)
         return pd.concat(result)
 

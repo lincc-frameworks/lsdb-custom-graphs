@@ -36,11 +36,12 @@ class FromHealpixMap(Operation):
         self.kwargs = kwargs
 
     @projection_handler(ColumnProjection)
-    def handle_column_projection(self, projection: ColumnProjection) -> FromHealpixMap:
+    def handle_column_projection(self, projection: ColumnProjection) -> tuple[
+        FromHealpixMap, ColumnProjection]:
         if not supports_column_selection(self.func):
-            return self
+            return self, projection
         return FromHealpixMap(self.func, self.pixels, *self.args, meta=self.meta,
-                              columns=projection.column_selector, **self.kwargs)
+                              columns=projection.column_selector, **self.kwargs), projection
 
     @property
     def name(self) -> str:
