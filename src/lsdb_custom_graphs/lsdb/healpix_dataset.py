@@ -1,20 +1,21 @@
-from typing import Callable, Sequence, Self
+from collections.abc import Callable, Sequence
+from typing import Self
 
-from dask import threaded
-from dask.base import get_scheduler
-from hats.catalog.healpix_dataset.healpix_dataset import HealpixDataset as HCHealpixDataset
+import dask.dataframe as dd
+import nested_pandas as npd
 import numpy as np
 import pandas as pd
-import nested_pandas as npd
-import dask.dataframe as dd
-from dask.dataframe.core import _repr_data_series
-from dask.optimization import cull
-from dask.delayed import Delayed
-from hats import HealpixPixel
-from hats.pixel_math.healpix_pixel_function import get_pixel_argsort
-
 import pyarrow as pa
+from dask import threaded
+from dask.base import get_scheduler
+from dask.dataframe.core import _repr_data_series
+from dask.delayed import Delayed
+from dask.optimization import cull
+from hats import HealpixPixel
+from hats.catalog.healpix_dataset.healpix_dataset import HealpixDataset as HCHealpixDataset
+from hats.pixel_math.healpix_pixel_function import get_pixel_argsort
 from lsdb.core.search.abstract_search import AbstractSearch
+from lsdb.dask.divisions import get_pixels_divisions
 
 from lsdb_custom_graphs.lsdb.ops.lsdb_ops import MapPartitions, SelectPixels
 from lsdb_custom_graphs.lsdb.ops.operation import Operation
@@ -121,7 +122,7 @@ class HealpixDataset:
         )
 
     def _create_modified_hc_structure(
-            self, hc_structure=None, updated_schema=None, **kwargs
+        self, hc_structure=None, updated_schema=None, **kwargs
     ) -> HCHealpixDataset:
         """Copy the catalog structure and override the specified catalog info parameters."""
         if hc_structure is None:
@@ -136,10 +137,10 @@ class HealpixDataset:
         )
 
     def _create_updated_dataset(
-            self,
-            op: Operation | None = None,
-            hc_structure: HCHealpixDataset | None = None,
-            updated_catalog_info_params: dict | None = None,
+        self,
+        op: Operation | None = None,
+        hc_structure: HCHealpixDataset | None = None,
+        updated_catalog_info_params: dict | None = None,
     ) -> Self:
         """Creates a new copy of the catalog, updating any provided arguments
 
@@ -168,8 +169,8 @@ class HealpixDataset:
         hc_structure = hc_structure if hc_structure is not None else self.hc_structure
         updated_catalog_info_params = updated_catalog_info_params or {}
         if (
-                "default_columns" not in updated_catalog_info_params
-                and hc_structure.catalog_info.default_columns is not None
+            "default_columns" not in updated_catalog_info_params
+            and hc_structure.catalog_info.default_columns is not None
         ):
             updated_catalog_info_params["default_columns"] = [
                 col for col in hc_structure.catalog_info.default_columns if col in op.meta.columns
@@ -277,7 +278,7 @@ class HealpixDataset:
         result = schedule(healpix_graph.graph, healpix_graph.keys)
         return pd.concat(result)
 
-    def to_dask(self, optimize_graph=False):
+    def to_dask(self, optimize_graph=False, divisions=True):
         """Converts to a lsdb.nested Dask DataFrame
 
         Parameters
@@ -286,6 +287,10 @@ class HealpixDataset:
             Whether to perform graph optimization before creating the
             Dask DataFrame. By default False, as it should not be necessary in
             most cases.
+        divisions : bool or list, default True
+            Whether to set the divisions of the Dask DataFrame to the HEALPix
+            pixels. If True, will set divisions to the HEALPix pixels. If
+            False, will not set divisions.
         """
         build = self.operation.build()
         graph = build.graph
@@ -294,8 +299,14 @@ class HealpixDataset:
 
         graph_delayed = [Delayed(key, graph) for key in keys]
 
+        if divisions:
+            pixels = self.get_ordered_healpix_pixels()
+            divisions = get_pixels_divisions(pixels)
+        else:
+            divisions = None
+
         if not optimize_graph:
-            return dd.from_delayed(graph_delayed, meta=meta)
+            return dd.from_delayed(graph_delayed, meta=meta, divisions=divisions)
 
         # I don't know if we will actually ever need to do this
         shared_graph = dict(graph_delayed[0].__dask_graph__())
@@ -303,4 +314,4 @@ class HealpixDataset:
         for d in graph_delayed:
             culled_graph, _ = cull(shared_graph, list(d.__dask_keys__()))
             optimized_graph.append(Delayed(d.key, culled_graph))
-        return dd.from_delayed(optimized_graph, meta=meta)
+        return dd.from_delayed(optimized_graph, meta=meta, divisions=divisions)
