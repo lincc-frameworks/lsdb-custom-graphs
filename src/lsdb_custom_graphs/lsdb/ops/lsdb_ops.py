@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING
+import inspect
+from typing import TYPE_CHECKING, Self
 
 from dask._task_spec import Task, TaskRef, cull
 from dask.tokenize import _tokenize_deterministic
@@ -11,19 +12,35 @@ import pandas as pd
 from hats import HealpixPixel
 from pyarrow.lib import Sequence
 
-from lsdb_custom_graphs.lsdb.ops.operation import HealpixGraph, Operation
+from lsdb_custom_graphs.lsdb.ops.operation import HealpixGraph, Operation, projection_handler, \
+    projection_emitter
+from lsdb_custom_graphs.lsdb.ops.projections import ColumnProjection
 
 if TYPE_CHECKING:
     from lsdb_custom_graphs.lsdb.healpix_dataset import HealpixDataset
 
 
+def supports_column_selection(func):
+    """Check if a function has a `columns` argument that can be used to specify the output columns."""
+    return "columns" in inspect.signature(func).parameters
+
+
 class FromHealpixMap(Operation):
-    def __init__(self, func, pixels, *args, meta=None, **kwargs):
+    def __init__(self, func, pixels, *args, meta=None, columns=None, **kwargs):
         self.func = func
         self.pixels = pixels
         self.args = args
         self._meta = meta
+        if columns is not None:
+            kwargs = kwargs | {"columns": columns}
         self.kwargs = kwargs
+
+    @projection_handler(ColumnProjection)
+    def handle_column_projection(self, projection: ColumnProjection) -> FromHealpixMap:
+        if not supports_column_selection(self.func):
+            return self
+        return FromHealpixMap(self.func, self.pixels, *self.args, meta=self.meta,
+                              columns=projection.column_selector, **self.kwargs)
 
     @property
     def name(self) -> str:
@@ -42,6 +59,15 @@ class FromHealpixMap(Operation):
             if not isinstance(first_part, pd.DataFrame):
                 raise ValueError("FromMap function must return a pandas DataFrame")
             return first_part.iloc[:0].copy()
+
+    @property
+    def dependencies(self) -> list[Self]:
+        return []
+
+    def replace_dependencies(self, dependencies: list[Self]) -> Self:
+        if len(dependencies) > 0:
+            raise ValueError("FromHealpixMap cannot have dependencies")
+        return self
 
     def build(self) -> HealpixGraph:
         graph = {}
@@ -65,8 +91,18 @@ def map_parts_meta(func, base_meta: pd.DataFrame, *args, include_pixel=False, **
 
 
 class MapPartitions(Operation):
+    class_func = None
+    class_include_pixels = None
+
     def __init__(self, base: Operation, func, *args, meta=None, include_pixel=False, **kwargs):
         self.base = base
+        if self.class_func is not None and func is not None:
+            raise ValueError("Cannot specify func for MapPartitions when class_func is set")
+        if self.class_include_pixels is not None and include_pixel != self.class_include_pixels:
+            raise ValueError(
+                "Cannot specify include_pixel for MapPartitions when class_include_pixels is set")
+        if func is None and self.class_func is not None:
+            func = self.class_func
         self.func = func
         self.args = args
         self._meta = meta
@@ -89,6 +125,16 @@ class MapPartitions(Operation):
             return map_parts_meta(self.func, self.base.meta, *self.args, include_pixel=self.include_pixel,
                                   **self.kwargs)
 
+    @property
+    def dependencies(self) -> list[Operation]:
+        return [self.base]
+
+    def replace_dependencies(self, dependencies: list[Operation]) -> Self:
+        if len(dependencies) != 1:
+            raise ValueError("MapPartitions must have exactly one dependency")
+        return MapPartitions(dependencies[0], self.func, *self.args, meta=self._meta,
+                             include_pixel=self.include_pixel, **self.kwargs)
+
     def build(self) -> HealpixGraph:
         previous = self.base.build()
         graph = previous.graph
@@ -104,7 +150,29 @@ class MapPartitions(Operation):
         return HealpixGraph(graph, pixel_keys)
 
 
+def perform_select_columns(df, columns):
+    return df[columns]
+
+
+class SelectColumns(MapPartitions):
+    allow_column_projection_passthrough = True
+
+    @staticmethod
+    def class_func(df, item):
+        return df[item]
+
+    @property
+    def column_selector(self):
+        return self.args[0]
+
+    @projection_emitter(ColumnProjection)
+    def emit_column_projection(self) -> ColumnProjection:
+        return ColumnProjection(self.column_selector)
+
+
 class SelectPixels(Operation):
+    allow_column_projection_passthrough = True
+
     def __init__(self, base: Operation, pixels: Sequence[HealpixPixel]):
         self.base = base
         self.pixels = pixels
@@ -120,6 +188,15 @@ class SelectPixels(Operation):
     @property
     def meta(self) -> pd.DataFrame:
         return self.base.meta
+
+    @property
+    def dependencies(self) -> list[Self]:
+        return [self.base]
+
+    def replace_dependencies(self, dependencies: list[Self]) -> Self:
+        if len(dependencies) != 1:
+            raise ValueError("SelectPixels must have exactly one dependency")
+        return SelectPixels(dependencies[0], self.pixels)
 
     def build(self) -> HealpixGraph:
         previous = self.base.build()
@@ -151,6 +228,27 @@ class AlignAndApply(Operation):
     @property
     def input_ops(self):
         return [cat.operation if cat is not None else None for cat in self.input_cats]
+
+    @property
+    def dependencies(self) -> list[Self]:
+        return [op for op in self.input_ops if op is not None]
+
+    def replace_dependencies(self, dependencies: list[Self]) -> Self:
+        deps = dependencies.copy()
+        non_none_ops = [op for op in self.input_ops if op is not None]
+        if len(dependencies) != len(non_none_ops):
+            raise ValueError("AlignAndApply must have exactly one dependency for each non-None input cat")
+        new_input_cats = []
+        for ic in self.input_cats:
+            if ic is not None:
+                new_op = deps.pop(0)
+                new_input_cats.append(ic._create_updated_dataset(op=new_op))
+            else:
+                new_input_cats.append(None)
+        return AlignAndApply(
+            new_input_cats, self.pixel_lists, self.func, self._meta, self.output_pixels, self.args,
+            self.kwargs
+        )
 
     @property
     def metas(self):

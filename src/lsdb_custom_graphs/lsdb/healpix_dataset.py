@@ -17,7 +17,7 @@ from hats.pixel_math.healpix_pixel_function import get_pixel_argsort
 from lsdb.core.search.abstract_search import AbstractSearch
 from lsdb.dask.divisions import get_pixels_divisions
 
-from lsdb_custom_graphs.lsdb.ops.lsdb_ops import MapPartitions, SelectPixels
+from lsdb_custom_graphs.lsdb.ops.lsdb_ops import MapPartitions, SelectPixels, SelectColumns
 from lsdb_custom_graphs.lsdb.ops.operation import Operation
 from lsdb_custom_graphs.lsdb.partition_indexer import PartitionIndexer
 
@@ -70,6 +70,24 @@ class HealpixDataset:
         if self.operation.meta.index.name in col_names:
             col_names.remove(self.operation.meta.index.name)
         return col_names
+
+    def _check_unloaded_columns(self, column_names: Sequence[str | None] | None):
+        """Check the list of given column names for any that are valid
+        but unavailable because they were not loaded."""
+        if not column_names:
+            return
+        # Quick local optimization
+        problematic = set(self.all_columns) - set(self.columns)
+        confusing = [name for name in column_names if name and name in problematic]
+        if not confusing:
+            return
+        if len(confusing) == 1:
+            confusing_column = confusing[0]
+            msg = f"Column `{confusing_column}` is in the catalog but was not loaded."
+        else:
+            confusing_columns = ", ".join([f"`{c}`" for c in confusing])
+            msg = f"Columns {confusing_columns} are in the catalog but were not loaded."
+        raise ValueError(msg)
 
     def get_ordered_healpix_pixels(self) -> Sequence[HealpixPixel]:
         """Get all HEALPix pixels that are contained in the catalog,
@@ -183,15 +201,25 @@ class HealpixDataset:
         )
         return self.__class__(op, hc_structure)
 
-    def map_partitions(self, func, *args, meta=None, include_pixel=False, **kwargs):
-        new_op = MapPartitions(self.operation, func, *args, meta=meta, include_pixel=include_pixel, **kwargs)
+    def apply_map_partitions_operation(self, op_class: type[Operation], func, *args, meta=None,
+                                       include_pixel=False, **kwargs):
+        new_op = op_class(self.operation, func, *args, meta=meta, include_pixel=include_pixel, **kwargs)
         return self._create_updated_dataset(op=new_op)
+
+    def map_partitions(self, func, *args, meta=None, include_pixel=False, **kwargs):
+        return self.apply_map_partitions_operation(MapPartitions, func, *args, meta=meta,
+                                                   include_pixel=include_pixel, **kwargs)
 
     def __getitem__(self, item: str | list[str]) -> Self:
         """Select a column or columns from the catalog, always returning a catalog (not a Series)."""
-        columns = [item] if isinstance(item, str) else list(item)
-        new_op = MapPartitions(self.operation, pd.DataFrame.__getitem__, columns)
-        return self._create_updated_dataset(op=new_op)
+        if isinstance(item, str):
+            self._check_unloaded_columns([item])
+        elif isinstance(item, Sequence):
+            self._check_unloaded_columns([col for col in item if isinstance(col, str)])
+        meta = self.operation.meta
+        if isinstance(meta, npd.NestedFrame) and meta._is_key_list(item):
+            return self.apply_map_partitions_operation(SelectColumns, None, item)
+        return self.apply_map_partitions_operation(MapPartitions, lambda df, item: df[item], item)
 
     def query(self, expr: str) -> Self:
         """Filters catalog using a pandas query expression.
