@@ -102,13 +102,17 @@ class MapPartitions(Operation):
         if self.class_include_pixels is not None and include_pixel != self.class_include_pixels:
             raise ValueError(
                 "Cannot specify include_pixel for MapPartitions when class_include_pixels is set")
-        if func is None and self.class_func is not None:
-            func = self.class_func
-        self.func = func
+        self._func = func
         self.args = args
         self._meta = meta
         self.include_pixel = include_pixel
         self.kwargs = kwargs
+
+    @property
+    def func(self):
+        if self.class_func is None:
+            return self._func
+        return self.class_func
 
     @property
     def name(self) -> str:
@@ -133,8 +137,8 @@ class MapPartitions(Operation):
     def replace_dependencies(self, dependencies: list[Operation]) -> Self:
         if len(dependencies) != 1:
             raise ValueError("MapPartitions must have exactly one dependency")
-        return MapPartitions(dependencies[0], self.func, *self.args, meta=self._meta,
-                             include_pixel=self.include_pixel, **self.kwargs)
+        return self.__class__(dependencies[0], self._func, *self.args, meta=self._meta,
+                              include_pixel=self.include_pixel, **self.kwargs)
 
     def build(self) -> HealpixGraph:
         previous = self.base.build()
@@ -197,7 +201,7 @@ class SelectPixels(Operation):
     def replace_dependencies(self, dependencies: list[Self]) -> Self:
         if len(dependencies) != 1:
             raise ValueError("SelectPixels must have exactly one dependency")
-        return SelectPixels(dependencies[0], self.pixels)
+        return self.__class__(dependencies[0], self.pixels)
 
     def build(self) -> HealpixGraph:
         previous = self.base.build()
@@ -246,7 +250,7 @@ class AlignAndApply(Operation):
                 new_input_cats.append(ic._create_updated_dataset(op=new_op))
             else:
                 new_input_cats.append(None)
-        return AlignAndApply(
+        return self.__class__(
             new_input_cats, self.pixel_lists, self.func, self._meta, self.output_pixels, self.args,
             self.kwargs
         )
